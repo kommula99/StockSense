@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+requests
+pandas
+numpy
+scikit-learn
+tensorflow
+keras
+vaderSentiment
+transformers
+torch
+yfinance
+python-dotenv
+httpx
