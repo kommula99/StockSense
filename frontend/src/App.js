@@ -1,525 +1,621 @@
 import { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from "lightweight-charts";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine, Area, AreaChart, BarChart, Bar, Legend
+  Tooltip, ResponsiveContainer, ReferenceLine
 } from "recharts";
 
-const API_BASE = "http://127.0.0.1:8000/api/stock";
+const API = "http://127.0.0.1:8000/api/stock";
 
-const POPULAR_STOCKS = [
-  { symbol: "AAPL", name: "Apple" },
-  { symbol: "TSLA", name: "Tesla" },
-  { symbol: "GOOGL", name: "Google" },
-  { symbol: "MSFT", name: "Microsoft" },
-  { symbol: "AMZN", name: "Amazon" },
-  { symbol: "NVDA", name: "NVIDIA" },
-  { symbol: "META", name: "Meta" },
-  { symbol: "RELIANCE.NS", name: "Reliance" },
-  { symbol: "TCS.NS", name: "TCS" },
-  { symbol: "INFY.NS", name: "Infosys" },
-  { symbol: "HDFCBANK.NS", name: "HDFC Bank" },
-  { symbol: "WIPRO.NS", name: "Wipro" },
+const QUICK_PICKS = [
+  { label: "AAPL", flag: "🇺🇸" },
+  { label: "TSLA", flag: "🇺🇸" },
+  { label: "NVDA", flag: "🇺🇸" },
+  { label: "MSFT", flag: "🇺🇸" },
+  { label: "RELIANCE.NS", flag: "🇮🇳" },
+  { label: "TCS.NS", flag: "🇮🇳" },
+  { label: "INFY.NS", flag: "🇮🇳" },
+  { label: "HDFCBANK.NS", flag: "🇮🇳" },
 ];
 
-const formatNum = (n) => {
-  if (!n || n === "N/A") return "N/A";
-  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  return `$${n}`;
-};
+const RANGES = ["1M", "3M", "6M", "1Y", "2Y"];
 
-const getRsiColor = (rsi) => {
-  if (!rsi || rsi === "N/A") return "#94a3b8";
-  if (rsi > 70) return "#f87171";
-  if (rsi < 30) return "#34d399";
-  return "#94a3b8";
-};
+function filterByRange(prices, range) {
+  const now = new Date();
+  const months = { "1M": 1, "3M": 3, "6M": 6, "1Y": 12, "2Y": 24 };
+  const cutoff = new Date(now);
+  cutoff.setMonth(cutoff.getMonth() - months[range]);
+  return prices.filter((p) => new Date(p.date) >= cutoff);
+}
 
-const getRsiLabel = (rsi) => {
-  if (!rsi || rsi === "N/A") return "NEUTRAL";
-  if (rsi > 70) return "OVERBOUGHT";
-  if (rsi < 30) return "OVERSOLD";
-  return "NEUTRAL";
-};
+// TradingView Candlestick Chart Component
+function CandlestickChart({ prices, range }) {
+  const chartRef = useRef(null);
+  const chartInstanceRef = useRef(null);
+  const seriesRef = useRef(null);
+  const ma20Ref = useRef(null);
+  const ma50Ref = useRef(null);
 
-const CustomTooltip = ({ active, payload, label }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div style={{
-        background: "rgba(15,20,40,0.97)",
-        border: "1px solid rgba(99,179,237,0.3)",
-        borderRadius: 8,
-        padding: "10px 14px",
-        fontSize: 12,
-        color: "#e2e8f0"
-      }}>
-        <p style={{ color: "#63b3ed", marginBottom: 4, fontWeight: 700 }}>{label}</p>
-        {payload.map((p, i) => (
-          <p key={i} style={{ color: p.color, margin: "2px 0" }}>
-            {p.name}: <strong>{typeof p.value === "number" ? p.value.toFixed(2) : p.value}</strong>
-          </p>
-        ))}
-      </div>
-    );
-  }
-  return null;
-};
+  useEffect(() => {
+    if (!chartRef.current || !prices?.length) return;
+
+    if (chartInstanceRef.current) {
+      chartInstanceRef.current.remove();
+    }
+
+    const chart = createChart(chartRef.current, {
+      width: chartRef.current.clientWidth,
+      height: 420,
+      layout: {
+        background: { color: "#0d1117" },
+        textColor: "#94a3b8",
+      },
+      grid: {
+        vertLines: { color: "#1e293b" },
+        horzLines: { color: "#1e293b" },
+      },
+      crosshair: {
+        mode: 1,
+        vertLine: { color: "#38bdf8", labelBackgroundColor: "#38bdf8" },
+        horzLine: { color: "#38bdf8", labelBackgroundColor: "#38bdf8" },
+      },
+      rightPriceScale: {
+        borderColor: "#1e293b",
+        textColor: "#94a3b8",
+      },
+      timeScale: {
+        borderColor: "#1e293b",
+        timeVisible: true,
+        secondsVisible: false,
+      },
+    });
+
+    chartInstanceRef.current = chart;
+
+    const filtered = filterByRange(prices, range);
+
+    const candleData = filtered.map((p) => ({
+      time: p.date,
+      open: p.open,
+      high: p.high,
+      low: p.low,
+      close: p.close,
+    }));
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderUpColor: "#22c55e",
+      borderDownColor: "#ef4444",
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
+    });
+    candleSeries.setData(candleData);
+    seriesRef.current = candleSeries;
+
+    // MA20 Line
+    const ma20Data = filtered
+      .filter((p) => p.ma20)
+      .map((p) => ({ time: p.date, value: p.ma20 }));
+    const ma20Series = chart.addSeries(LineSeries, {
+      color: "#f59e0b",
+      lineWidth: 1,
+      title: "MA20",
+    });
+    ma20Series.setData(ma20Data);
+    ma20Ref.current = ma20Series;
+
+    // MA50 Line
+    const ma50Data = filtered
+      .filter((p) => p.ma50)
+      .map((p) => ({ time: p.date, value: p.ma50 }));
+    const ma50Series = chart.addSeries(LineSeries, {
+      color: "#a78bfa",
+      lineWidth: 1,
+      title: "MA50",
+    });
+    ma50Series.setData(ma50Data);
+    ma50Ref.current = ma50Series;
+
+    chart.timeScale().fitContent();
+
+    const handleResize = () => {
+      if (chartRef.current) {
+        chart.applyOptions({ width: chartRef.current.clientWidth });
+      }
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      chart.remove();
+    };
+  }, [prices, range]);
+
+  return <div ref={chartRef} style={{ width: "100%", borderRadius: "8px", overflow: "hidden" }} />;
+}
+
+// Volume Chart
+function VolumeChart({ prices, range }) {
+  const chartRef = useRef(null);
+  const chartInstanceRef = useRef(null);
+
+  useEffect(() => {
+    if (!chartRef.current || !prices?.length) return;
+    if (chartInstanceRef.current) chartInstanceRef.current.remove();
+
+    const chart = createChart(chartRef.current, {
+      width: chartRef.current.clientWidth,
+      height: 160,
+      layout: { background: { color: "#0d1117" }, textColor: "#94a3b8" },
+      grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
+      rightPriceScale: { borderColor: "#1e293b" },
+      timeScale: { borderColor: "#1e293b", timeVisible: true },
+    });
+    chartInstanceRef.current = chart;
+
+    const filtered = filterByRange(prices, range);
+    const volData = filtered.map((p) => ({
+      time: p.date,
+      value: p.volume,
+      color: p.close >= p.open ? "#22c55e55" : "#ef444455",
+    }));
+
+    const volSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" } });
+    volSeries.setData(volData);
+    chart.timeScale().fitContent();
+
+    const handleResize = () => {
+      if (chartRef.current) chart.applyOptions({ width: chartRef.current.clientWidth });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => { window.removeEventListener("resize", handleResize); chart.remove(); };
+  }, [prices, range]);
+
+  return <div ref={chartRef} style={{ width: "100%", borderRadius: "8px", overflow: "hidden" }} />;
+}
 
 export default function App() {
   const [symbol, setSymbol] = useState("");
-  const [inputVal, setInputVal] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState("price");
-  const [chartRange, setChartRange] = useState(90);
-  const inputRef = useRef();
+  const [range, setRange] = useState("3M");
+  const [activeTab, setActiveTab] = useState("candlestick");
 
-  useEffect(() => {
-    if (!symbol) return;
+  const analyze = async (sym) => {
+    const target = sym || symbol;
+    if (!target) return;
     setLoading(true);
     setError("");
     setData(null);
-    fetch(`${API_BASE}/${symbol}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) { setError(d.error); setLoading(false); return; }
-        setData(d);
-        setLoading(false);
-      })
-      .catch(() => { setError("Failed to connect to backend."); setLoading(false); });
-  }, [symbol]);
-
-  const handleSearch = () => {
-    const val = inputVal.trim().toUpperCase();
-    if (val) setSymbol(val);
+    try {
+      const res = await axios.get(`${API}/${target.toUpperCase()}`);
+      setData(res.data);
+    } catch (e) {
+      setError("Could not fetch data. Check the symbol and try again.");
+    }
+    setLoading(false);
   };
 
-  const prices = data?.prices?.slice(-chartRange) || [];
-  const latestRsi = prices.length ? prices[prices.length - 1]?.rsi : null;
-  const company = data?.company || {};
-  const sentiment = data?.sentiment || {};
-  const news = data?.news || [];
-  const prediction = data?.prediction || [];
+  const sentimentColor =
+    data?.sentiment?.label === "Positive" ? "#22c55e"
+    : data?.sentiment?.label === "Negative" ? "#ef4444"
+    : "#f59e0b";
 
-  const sentimentColor = sentiment.label === "Positive" ? "#34d399"
-    : sentiment.label === "Negative" ? "#f87171" : "#fbbf24";
+  const filteredPrices = data ? filterByRange(data.prices, range) : [];
 
-  const priceChange = prices.length > 1
-    ? ((prices[prices.length - 1].close - prices[0].close) / prices[0].close * 100).toFixed(2)
-    : null;
+  const rsiData = filteredPrices.map((p) => ({ date: p.date.slice(5), rsi: p.rsi }));
+
+  const predictionData = data?.prediction?.predictions?.map((p, i) => ({
+    date: `Day ${i + 1}`,
+    price: p,
+  })) || [];
+
+  const currentPrice = data?.company?.currentPrice;
+  const lastClose = data?.prices?.[data.prices.length - 1]?.close;
+  const prevClose = data?.prices?.[data.prices.length - 2]?.close;
+  const priceChange = lastClose && prevClose ? (lastClose - prevClose).toFixed(2) : null;
+  const priceChangePct = lastClose && prevClose ? (((lastClose - prevClose) / prevClose) * 100).toFixed(2) : null;
 
   return (
     <div style={{
       minHeight: "100vh",
-      background: "linear-gradient(135deg, #060b18 0%, #0a1628 50%, #060d1f 100%)",
-      fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
+      background: "#0d1117",
       color: "#e2e8f0",
-      overflowX: "hidden"
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     }}>
-      {/* Ambient glow effects */}
+      {/* Top Nav */}
       <div style={{
-        position: "fixed", top: -200, left: -200, width: 600, height: 600,
-        borderRadius: "50%", background: "radial-gradient(circle, rgba(56,189,248,0.04) 0%, transparent 70%)",
-        pointerEvents: "none", zIndex: 0
-      }} />
-      <div style={{
-        position: "fixed", bottom: -200, right: -200, width: 500, height: 500,
-        borderRadius: "50%", background: "radial-gradient(circle, rgba(167,139,250,0.04) 0%, transparent 70%)",
-        pointerEvents: "none", zIndex: 0
-      }} />
-
-      <div style={{ position: "relative", zIndex: 1, maxWidth: 1200, margin: "0 auto", padding: "0 24px 60px" }}>
-
-        {/* Header */}
-        <div style={{ padding: "36px 0 28px", borderBottom: "1px solid rgba(255,255,255,0.06)", marginBottom: 32 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: 10,
-              background: "linear-gradient(135deg, #38bdf8, #6366f1)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 18, fontWeight: 900, color: "#fff"
-            }}>S</div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px", margin: 0,
-              background: "linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%)",
-              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-              StockSense
-            </h1>
-            <span style={{
-              fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#38bdf8",
-              background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.3)",
-              borderRadius: 4, padding: "2px 8px", marginLeft: 4
-            }}>AI POWERED</span>
-          </div>
-          <p style={{ color: "#64748b", margin: 0, fontSize: 13 }}>
-            Real-time analysis · LSTM prediction · Sentiment scoring · Global markets
-          </p>
-        </div>
-
-        {/* Search Bar */}
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            <div style={{ position: "relative", flex: 1 }}>
-              <input
-                ref={inputRef}
-                value={inputVal}
-                onChange={e => setInputVal(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === "Enter" && handleSearch()}
-                placeholder="Enter symbol: AAPL, TSLA, RELIANCE.NS, TCS.NS..."
-                style={{
-                  width: "100%", padding: "13px 16px", fontSize: 14,
-                  background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: 10, color: "#e2e8f0", outline: "none",
-                  transition: "border 0.2s", boxSizing: "border-box",
-                  fontFamily: "inherit", letterSpacing: "0.5px"
-                }}
-                onFocus={e => e.target.style.borderColor = "rgba(56,189,248,0.5)"}
-                onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.1)"}
-              />
-            </div>
-            <button onClick={handleSearch} style={{
-              padding: "13px 28px", borderRadius: 10,
-              background: "linear-gradient(135deg, #38bdf8, #6366f1)",
-              border: "none", color: "#fff", fontWeight: 700, fontSize: 14,
-              cursor: "pointer", letterSpacing: "0.5px", fontFamily: "inherit",
-              transition: "opacity 0.2s"
+        borderBottom: "1px solid #1e293b",
+        padding: "0 32px",
+        display: "flex",
+        alignItems: "center",
+        height: "56px",
+        background: "#0d1117",
+        position: "sticky",
+        top: 0,
+        zIndex: 100,
+      }}>
+        <span style={{ fontSize: "1.2rem", fontWeight: "800", color: "#38bdf8", letterSpacing: "-0.5px" }}>
+          ◈ StockSense
+        </span>
+        <span style={{ marginLeft: "12px", fontSize: "0.7rem", color: "#475569", background: "#1e293b", padding: "2px 8px", borderRadius: "4px" }}>
+          AI-POWERED
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", gap: "8px", alignItems: "center" }}>
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && analyze()}
+            placeholder="Symbol e.g. AAPL, TCS.NS"
+            style={{
+              padding: "8px 14px",
+              borderRadius: "6px",
+              border: "1px solid #334155",
+              background: "#161b22",
+              color: "#e2e8f0",
+              fontSize: "0.85rem",
+              width: "240px",
+              fontFamily: "inherit",
+              outline: "none",
             }}
-              onMouseOver={e => e.target.style.opacity = 0.85}
-              onMouseOut={e => e.target.style.opacity = 1}
-            >ANALYZE</button>
-          </div>
+          />
+          <button onClick={() => analyze()} style={{
+            padding: "8px 20px",
+            borderRadius: "6px",
+            background: "#38bdf8",
+            color: "#0d1117",
+            fontWeight: "700",
+            fontSize: "0.85rem",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}>
+            ANALYSE
+          </button>
+        </div>
+      </div>
 
-          {/* Quick select chips */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {POPULAR_STOCKS.map(s => (
-              <button key={s.symbol} onClick={() => { setInputVal(s.symbol); setSymbol(s.symbol); }}
-                style={{
-                  padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600,
-                  background: symbol === s.symbol ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.04)",
-                  border: symbol === s.symbol ? "1px solid rgba(56,189,248,0.5)" : "1px solid rgba(255,255,255,0.08)",
-                  color: symbol === s.symbol ? "#38bdf8" : "#94a3b8",
-                  cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s"
-                }}>
-                {s.name}
-              </button>
-            ))}
-          </div>
+      <div style={{ padding: "24px 32px", maxWidth: "1400px", margin: "0 auto" }}>
+
+        {/* Quick Picks */}
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
+          {QUICK_PICKS.map((q) => (
+            <button key={q.label} onClick={() => { setSymbol(q.label); analyze(q.label); }}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "6px",
+                border: "1px solid #1e293b",
+                background: "#161b22",
+                color: "#94a3b8",
+                fontSize: "0.78rem",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { e.target.style.borderColor = "#38bdf8"; e.target.style.color = "#38bdf8"; }}
+              onMouseLeave={e => { e.target.style.borderColor = "#1e293b"; e.target.style.color = "#94a3b8"; }}
+            >
+              {q.flag} {q.label}
+            </button>
+          ))}
         </div>
 
-        {/* Loading */}
         {loading && (
-          <div style={{ textAlign: "center", padding: "80px 0" }}>
-            <div style={{
-              width: 48, height: 48, border: "3px solid rgba(56,189,248,0.15)",
-              borderTopColor: "#38bdf8", borderRadius: "50%",
-              animation: "spin 0.8s linear infinite", margin: "0 auto 16px"
-            }} />
-            <p style={{ color: "#64748b", fontSize: 14 }}>Fetching live data + running LSTM model...</p>
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <div style={{ textAlign: "center", padding: "80px", color: "#475569" }}>
+            <div style={{ fontSize: "2rem", marginBottom: "16px" }}>⏳</div>
+            <p style={{ margin: 0, fontSize: "0.9rem" }}>Fetching data and running LSTM model...</p>
+            <p style={{ margin: "8px 0 0", fontSize: "0.78rem", color: "#334155" }}>This may take 15–20 seconds</p>
           </div>
         )}
 
-        {/* Error */}
         {error && (
-          <div style={{
-            background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)",
-            borderRadius: 10, padding: "16px 20px", color: "#f87171", fontSize: 14
-          }}>⚠ {error}</div>
+          <div style={{ background: "#1a0000", border: "1px solid #ef4444", borderRadius: "8px", padding: "16px", color: "#ef4444", marginBottom: "24px" }}>
+            ⚠ {error}
+          </div>
         )}
 
-        {/* Main Dashboard */}
-        {data && !loading && (
-          <div style={{ animation: "fadeIn 0.4s ease" }}>
-            <style>{`@keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }`}</style>
-
+        {data && (
+          <>
             {/* Company Header */}
             <div style={{
-              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 14, padding: "22px 26px", marginBottom: 18,
-              display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16
+              background: "#161b22",
+              border: "1px solid #1e293b",
+              borderRadius: "12px",
+              padding: "24px",
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "32px",
+              flexWrap: "wrap",
             }}>
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                  <h2 style={{ fontSize: 22, fontWeight: 800, margin: 0, color: "#f1f5f9" }}>
-                    {company.name || data.symbol}
-                  </h2>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "4px" }}>
+                  <h1 style={{ margin: 0, fontSize: "1.6rem", fontWeight: "800", color: "#f1f5f9" }}>
+                    {data.symbol}
+                  </h1>
                   <span style={{
-                    fontSize: 11, fontWeight: 700, color: "#64748b",
-                    background: "rgba(255,255,255,0.05)", borderRadius: 4, padding: "2px 8px",
-                    border: "1px solid rgba(255,255,255,0.08)"
-                  }}>{data.symbol}</span>
+                    background: sentimentColor + "22",
+                    color: sentimentColor,
+                    border: `1px solid ${sentimentColor}44`,
+                    padding: "2px 10px",
+                    borderRadius: "20px",
+                    fontSize: "0.72rem",
+                    fontWeight: "700",
+                  }}>
+                    {data.sentiment.label}
+                  </span>
                 </div>
-                <div style={{ display: "flex", gap: 16, fontSize: 12, color: "#64748b" }}>
-                  {company.sector !== "N/A" && <span>🏢 {company.sector}</span>}
-                  {company.industry !== "N/A" && <span>⚙ {company.industry}</span>}
-                </div>
+                <p style={{ margin: 0, color: "#64748b", fontSize: "0.85rem" }}>{data.company.name}</p>
+                <p style={{ margin: "4px 0 0", color: "#475569", fontSize: "0.75rem" }}>
+                  {data.company.sector} · {data.company.industry}
+                </p>
               </div>
-              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+
+              <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                <span style={{ fontSize: "2.2rem", fontWeight: "800", color: "#f1f5f9" }}>
+                  ${currentPrice?.toLocaleString?.() ?? currentPrice}
+                </span>
+                {priceChange && (
+                  <span style={{ fontSize: "1rem", color: priceChange >= 0 ? "#22c55e" : "#ef4444", fontWeight: "600" }}>
+                    {priceChange >= 0 ? "▲" : "▼"} {Math.abs(priceChange)} ({Math.abs(priceChangePct)}%)
+                  </span>
+                )}
+              </div>
+
+              <div style={{ marginLeft: "auto", display: "flex", gap: "24px", flexWrap: "wrap" }}>
                 {[
-                  { label: "Current Price", value: typeof company.currentPrice === "number" ? `$${company.currentPrice.toFixed(2)}` : "N/A" },
-                  { label: "Market Cap", value: formatNum(company.marketCap) },
-                  { label: "P/E Ratio", value: typeof company.peRatio === "number" ? company.peRatio.toFixed(2) : "N/A" },
-                  { label: "52W High", value: company["52wHigh"] !== "N/A" ? `$${Number(company["52wHigh"]).toFixed(2)}` : "N/A" },
-                  { label: "52W Low", value: company["52wLow"] !== "N/A" ? `$${Number(company["52wLow"]).toFixed(2)}` : "N/A" },
-                ].map(({ label, value }) => (
-                  <div key={label} style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{label}</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0" }}>{value}</div>
+                  ["Market Cap", typeof data.company.marketCap === "number" ? `$${(data.company.marketCap / 1e9).toFixed(1)}B` : "N/A"],
+                  ["P/E Ratio", data.company.peRatio !== "N/A" ? Number(data.company.peRatio).toFixed(2) : "N/A"],
+                  ["52W High", `$${data.company["52wHigh"]}`],
+                  ["52W Low", `$${data.company["52wLow"]}`],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ textAlign: "center" }}>
+                    <p style={{ margin: 0, color: "#475569", fontSize: "0.7rem" }}>{label}</p>
+                    <p style={{ margin: 0, color: "#e2e8f0", fontWeight: "700", fontSize: "0.95rem" }}>{val}</p>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Stats Row */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px,1fr))", gap: 12, marginBottom: 18 }}>
-              {/* Sentiment */}
-              <div style={{
-                background: "rgba(255,255,255,0.03)", border: `1px solid ${sentimentColor}33`,
-                borderRadius: 12, padding: "16px 20px"
-              }}>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, letterSpacing: 1 }}>SENTIMENT</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: sentimentColor }}>{sentiment.label || "N/A"}</div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
-                  Score: {typeof sentiment.score === "number" ? sentiment.score.toFixed(3) : "N/A"}
-                  {" · "}{sentiment.count || 0} articles
-                </div>
-              </div>
-
-              {/* RSI */}
-              <div style={{
-                background: "rgba(255,255,255,0.03)", border: `1px solid ${getRsiColor(latestRsi)}33`,
-                borderRadius: 12, padding: "16px 20px"
-              }}>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, letterSpacing: 1 }}>RSI (14)</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: getRsiColor(latestRsi) }}>
-                  {latestRsi ? latestRsi.toFixed(1) : "N/A"}
-                </div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{getRsiLabel(latestRsi)}</div>
-              </div>
-
-              {/* Price change */}
-              <div style={{
-                background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${parseFloat(priceChange) >= 0 ? "#34d39933" : "#f8717133"}`,
-                borderRadius: 12, padding: "16px 20px"
-              }}>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, letterSpacing: 1 }}>
-                  {chartRange}D CHANGE
-                </div>
-                <div style={{
-                  fontSize: 22, fontWeight: 800,
-                  color: parseFloat(priceChange) >= 0 ? "#34d399" : "#f87171"
-                }}>
-                  {priceChange !== null ? `${priceChange > 0 ? "+" : ""}${priceChange}%` : "N/A"}
-                </div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
-                  {prices[0]?.close ? `From $${prices[0].close}` : ""}
-                </div>
-              </div>
-
-              {/* Prediction */}
-              {prediction.length > 0 && (
-                <div style={{
-                  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(167,139,250,0.2)",
-                  borderRadius: 12, padding: "16px 20px"
-                }}>
-                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, letterSpacing: 1 }}>7D PREDICTION</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: "#a78bfa" }}>
-                    ${prediction[prediction.length - 1]?.predicted_price?.toFixed(2) || "N/A"}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>LSTM forecast</div>
-                </div>
-              )}
-            </div>
-
-            {/* Chart Tabs */}
+            {/* Chart Controls */}
             <div style={{
-              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 14, padding: "20px 24px", marginBottom: 18
+              background: "#161b22",
+              border: "1px solid #1e293b",
+              borderRadius: "12px",
+              padding: "20px 24px",
+              marginBottom: "20px",
             }}>
-              {/* Tab bar */}
-              <div style={{ display: "flex", gap: 4, marginBottom: 20, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", gap: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+                {/* Tab Switcher */}
+                <div style={{ display: "flex", gap: "4px", background: "#0d1117", borderRadius: "8px", padding: "4px" }}>
                   {[
-                    { key: "price", label: "Price + MA" },
-                    { key: "bollinger", label: "Bollinger Bands" },
-                    { key: "rsi", label: "RSI" },
-                    { key: "volume", label: "Volume" },
-                    { key: "prediction", label: "AI Prediction" },
-                  ].map(t => (
-                    <button key={t.key} onClick={() => setActiveTab(t.key)} style={{
-                      padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600,
-                      background: activeTab === t.key ? "rgba(56,189,248,0.15)" : "transparent",
-                      border: activeTab === t.key ? "1px solid rgba(56,189,248,0.4)" : "1px solid transparent",
-                      color: activeTab === t.key ? "#38bdf8" : "#64748b",
-                      cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s"
-                    }}>{t.label}</button>
+                    { key: "candlestick", label: "🕯 Candlestick" },
+                    { key: "rsi", label: "📉 RSI" },
+                    { key: "prediction", label: "🤖 Prediction" },
+                  ].map((tab) => (
+                    <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                      style={{
+                        padding: "6px 16px",
+                        borderRadius: "6px",
+                        border: "none",
+                        background: activeTab === tab.key ? "#1e293b" : "transparent",
+                        color: activeTab === tab.key ? "#38bdf8" : "#475569",
+                        fontSize: "0.8rem",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        fontWeight: activeTab === tab.key ? "700" : "400",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {tab.label}
+                    </button>
                   ))}
                 </div>
-                {/* Range selector */}
-                <div style={{ display: "flex", gap: 4 }}>
-                  {[30, 90, 180, 365].map(r => (
-                    <button key={r} onClick={() => setChartRange(r)} style={{
-                      padding: "5px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700,
-                      background: chartRange === r ? "rgba(99,102,241,0.2)" : "transparent",
-                      border: chartRange === r ? "1px solid rgba(99,102,241,0.4)" : "1px solid rgba(255,255,255,0.06)",
-                      color: chartRange === r ? "#a5b4fc" : "#64748b",
-                      cursor: "pointer", fontFamily: "inherit"
-                    }}>{r === 365 ? "1Y" : r === 180 ? "6M" : r === 90 ? "3M" : "1M"}</button>
+
+                {/* Range Selector */}
+                <div style={{ display: "flex", gap: "4px" }}>
+                  {RANGES.map((r) => (
+                    <button key={r} onClick={() => setRange(r)}
+                      style={{
+                        padding: "5px 12px",
+                        borderRadius: "6px",
+                        border: `1px solid ${range === r ? "#38bdf8" : "#1e293b"}`,
+                        background: range === r ? "#38bdf822" : "transparent",
+                        color: range === r ? "#38bdf8" : "#475569",
+                        fontSize: "0.78rem",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        fontWeight: range === r ? "700" : "400",
+                      }}
+                    >
+                      {r}
+                    </button>
                   ))}
                 </div>
               </div>
 
-              {/* Price + MA Chart */}
-              {activeTab === "price" && (
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={prices} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" tick={{ fill: "#475569", fontSize: 10 }}
-                      interval={Math.floor(prices.length / 6)} />
-                    <YAxis tick={{ fill: "#475569", fontSize: 10 }} domain={["auto", "auto"]}
-                      tickFormatter={v => `$${v}`} width={60} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ fontSize: 12, color: "#64748b" }} />
-                    <Line type="monotone" dataKey="close" name="Close" stroke="#38bdf8" dot={false} strokeWidth={2} />
-                    <Line type="monotone" dataKey="ma20" name="MA20" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 2" />
-                    <Line type="monotone" dataKey="ma50" name="MA50" stroke="#a78bfa" dot={false} strokeWidth={1.5} strokeDasharray="4 2" />
-                  </LineChart>
-                </ResponsiveContainer>
+              {/* Legend for candlestick */}
+              {activeTab === "candlestick" && (
+                <div style={{ display: "flex", gap: "20px", marginBottom: "12px", fontSize: "0.75rem" }}>
+                  <span style={{ color: "#22c55e" }}>▲ Bullish</span>
+                  <span style={{ color: "#ef4444" }}>▼ Bearish</span>
+                  <span style={{ color: "#f59e0b" }}>— MA20</span>
+                  <span style={{ color: "#a78bfa" }}>— MA50</span>
+                </div>
               )}
 
-              {/* Bollinger Bands */}
-              {activeTab === "bollinger" && (
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={prices} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" tick={{ fill: "#475569", fontSize: 10 }} interval={Math.floor(prices.length / 6)} />
-                    <YAxis tick={{ fill: "#475569", fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={v => `$${v}`} width={60} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ fontSize: 12, color: "#64748b" }} />
-                    <Line type="monotone" dataKey="bb_upper" name="BB Upper" stroke="#f87171" dot={false} strokeWidth={1.5} strokeDasharray="3 2" />
-                    <Line type="monotone" dataKey="close" name="Close" stroke="#38bdf8" dot={false} strokeWidth={2} />
-                    <Line type="monotone" dataKey="bb_lower" name="BB Lower" stroke="#34d399" dot={false} strokeWidth={1.5} strokeDasharray="3 2" />
-                  </LineChart>
-                </ResponsiveContainer>
+              {activeTab === "candlestick" && (
+                <>
+                  <CandlestickChart prices={data.prices} range={range} />
+                  <div style={{ marginTop: "12px" }}>
+                    <p style={{ margin: "0 0 8px", color: "#475569", fontSize: "0.72rem" }}>VOLUME</p>
+                    <VolumeChart prices={data.prices} range={range} />
+                  </div>
+                </>
               )}
 
-              {/* RSI Chart */}
               {activeTab === "rsi" && (
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={prices} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" tick={{ fill: "#475569", fontSize: 10 }} interval={Math.floor(prices.length / 6)} />
-                    <YAxis tick={{ fill: "#475569", fontSize: 10 }} domain={[0, 100]} width={40} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <ReferenceLine y={70} stroke="#f87171" strokeDasharray="4 2" label={{ value: "Overbought 70", fill: "#f87171", fontSize: 10 }} />
-                    <ReferenceLine y={30} stroke="#34d399" strokeDasharray="4 2" label={{ value: "Oversold 30", fill: "#34d399", fontSize: 10 }} />
-                    <Line type="monotone" dataKey="rsi" name="RSI" stroke="#f59e0b" dot={false} strokeWidth={2} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <div>
+                  {/* RSI Indicator Badge */}
+                  {filteredPrices.length > 0 && (() => {
+                    const latestRSI = filteredPrices[filteredPrices.length - 1]?.rsi;
+                    const rsiLabel = latestRSI > 70 ? "Overbought" : latestRSI < 30 ? "Oversold" : "Neutral";
+                    const rsiColor = latestRSI > 70 ? "#ef4444" : latestRSI < 30 ? "#22c55e" : "#f59e0b";
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+                        <span style={{ color: "#475569", fontSize: "0.8rem" }}>Current RSI:</span>
+                        <span style={{
+                          background: rsiColor + "22",
+                          color: rsiColor,
+                          border: `1px solid ${rsiColor}44`,
+                          padding: "3px 12px",
+                          borderRadius: "20px",
+                          fontSize: "0.8rem",
+                          fontWeight: "700",
+                        }}>
+                          {latestRSI?.toFixed(1)} — {rsiLabel}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={rsiData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="date" stroke="#334155" tick={{ fontSize: 10 }} interval={Math.floor(rsiData.length / 8)} />
+                      <YAxis stroke="#334155" tick={{ fontSize: 10 }} domain={[0, 100]} />
+                      <Tooltip contentStyle={{ background: "#161b22", border: "1px solid #334155", borderRadius: "8px", fontFamily: "inherit", fontSize: "0.8rem" }} />
+                      <ReferenceLine y={70} stroke="#ef444488" strokeDasharray="4 4" label={{ value: "Overbought 70", fill: "#ef4444", fontSize: 10 }} />
+                      <ReferenceLine y={30} stroke="#22c55e88" strokeDasharray="4 4" label={{ value: "Oversold 30", fill: "#22c55e", fontSize: 10 }} />
+                      <Line type="monotone" dataKey="rsi" stroke="#38bdf8" dot={false} strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               )}
 
-              {/* Volume */}
-              {activeTab === "volume" && (
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={prices} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                    <XAxis dataKey="date" tick={{ fill: "#475569", fontSize: 10 }} interval={Math.floor(prices.length / 6)} />
-                    <YAxis tick={{ fill: "#475569", fontSize: 10 }} width={60}
-                      tickFormatter={v => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="volume" name="Volume" fill="rgba(56,189,248,0.4)" radius={[2, 2, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-
-              {/* AI Prediction */}
               {activeTab === "prediction" && (
                 <div>
-                  {prediction.length > 0 ? (
-                    <>
-                      <ResponsiveContainer width="100%" height={240}>
-                        <LineChart data={prediction} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                          <XAxis dataKey="day" tick={{ fill: "#475569", fontSize: 10 }} />
-                          <YAxis tick={{ fill: "#475569", fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={v => `$${v.toFixed(0)}`} width={60} />
-                          <Tooltip content={<CustomTooltip />} />
-                          <Line type="monotone" dataKey="predicted_price" name="Predicted Price" stroke="#a78bfa" dot={{ fill: "#a78bfa", r: 4 }} strokeWidth={2.5} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-                        {prediction.map((p, i) => (
-                          <div key={i} style={{
-                            flex: "1 1 80px", background: "rgba(167,139,250,0.06)",
-                            border: "1px solid rgba(167,139,250,0.2)", borderRadius: 8,
-                            padding: "10px 12px", textAlign: "center"
-                          }}>
-                            <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>Day {i + 1}</div>
-                            <div style={{ fontSize: 15, fontWeight: 700, color: "#a78bfa" }}>
-                              ${p.predicted_price?.toFixed(2)}
-                            </div>
-                          </div>
-                        ))}
+                  <p style={{ margin: "0 0 16px", color: "#475569", fontSize: "0.8rem" }}>
+                    LSTM model trained on 2 years of data · 7-day forecast
+                  </p>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <LineChart data={predictionData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="date" stroke="#334155" tick={{ fontSize: 11 }} />
+                      <YAxis stroke="#334155" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
+                      <Tooltip contentStyle={{ background: "#161b22", border: "1px solid #334155", borderRadius: "8px", fontFamily: "inherit" }} />
+                      <Line type="monotone" dataKey="price" stroke="#a78bfa" dot={{ fill: "#a78bfa", r: 5 }} strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: "flex", gap: "10px", marginTop: "20px", flexWrap: "wrap" }}>
+                    {data.prediction.predictions.map((p, i) => (
+                      <div key={i} style={{
+                        background: "#0d1117",
+                        border: "1px solid #1e293b",
+                        borderRadius: "8px",
+                        padding: "12px 16px",
+                        textAlign: "center",
+                        minWidth: "80px",
+                      }}>
+                        <p style={{ margin: 0, color: "#475569", fontSize: "0.7rem" }}>DAY {i + 1}</p>
+                        <p style={{ margin: "4px 0 0", color: "#a78bfa", fontWeight: "700", fontSize: "0.95rem" }}>${p}</p>
                       </div>
-                    </>
-                  ) : (
-                    <div style={{ textAlign: "center", padding: 40, color: "#64748b" }}>No prediction data available</div>
-                  )}
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* News */}
-            {news.length > 0 && (
+            {/* Bottom Row — Sentiment + News */}
+            <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: "20px" }}>
+              {/* Sentiment Card */}
               <div style={{
-                background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
-                borderRadius: 14, padding: "20px 24px"
+                background: "#161b22",
+                border: "1px solid #1e293b",
+                borderRadius: "12px",
+                padding: "24px",
               }}>
-                <h3 style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", letterSpacing: 1, marginBottom: 16, margin: "0 0 16px" }}>
-                  LATEST NEWS
-                </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {news.map((article, i) => {
-                    const sc = article.sentiment?.compound;
-                    const aColor = sc > 0.05 ? "#34d399" : sc < -0.05 ? "#f87171" : "#fbbf24";
-                    return (
-                      <a key={i} href={article.url} target="_blank" rel="noopener noreferrer"
-                        style={{ textDecoration: "none" }}>
-                        <div style={{
-                          background: "rgba(255,255,255,0.02)", borderLeft: `3px solid ${aColor}`,
-                          borderRadius: "0 8px 8px 0", padding: "12px 16px",
-                          transition: "background 0.15s"
-                        }}
-                          onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
-                          onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-                        >
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 4 }}>
-                            {article.title}
-                          </div>
-                          <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#475569" }}>
-                            <span>{article.source}</span>
-                            <span>{article.publishedAt?.substring(0, 10)}</span>
-                            <span style={{ color: aColor, fontWeight: 700 }}>
-                              {sc > 0.05 ? "▲ Positive" : sc < -0.05 ? "▼ Negative" : "◆ Neutral"}
-                            </span>
-                          </div>
-                        </div>
-                      </a>
-                    );
-                  })}
+                <p style={{ margin: "0 0 16px", color: "#475569", fontSize: "0.72rem", letterSpacing: "0.05em" }}>SENTIMENT ANALYSIS</p>
+                <div style={{ textAlign: "center", padding: "20px 0" }}>
+                  <div style={{
+                    width: "80px", height: "80px", borderRadius: "50%",
+                    background: sentimentColor + "22",
+                    border: `3px solid ${sentimentColor}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    margin: "0 auto 16px",
+                    fontSize: "1.8rem",
+                  }}>
+                    {data.sentiment.label === "Positive" ? "📈" : data.sentiment.label === "Negative" ? "📉" : "➡️"}
+                  </div>
+                  <p style={{ margin: 0, fontSize: "1.4rem", fontWeight: "800", color: sentimentColor }}>
+                    {data.sentiment.label}
+                  </p>
+                  <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: "0.85rem" }}>
+                    Score: {data.sentiment.score}
+                  </p>
+                  <p style={{ margin: "4px 0 0", color: "#475569", fontSize: "0.75rem" }}>
+                    {data.sentiment.articles_analyzed} articles analysed
+                  </p>
                 </div>
               </div>
-            )}
-          </div>
+
+              {/* News Feed */}
+              <div style={{
+                background: "#161b22",
+                border: "1px solid #1e293b",
+                borderRadius: "12px",
+                padding: "24px",
+                maxHeight: "420px",
+                overflowY: "auto",
+              }}>
+                <p style={{ margin: "0 0 16px", color: "#475569", fontSize: "0.72rem", letterSpacing: "0.05em" }}>LATEST NEWS</p>
+                {data.sentiment.articles.map((article, i) => {
+                  const ac = article.score >= 0.05 ? "#22c55e" : article.score <= -0.05 ? "#ef4444" : "#f59e0b";
+                  return (
+                    <a key={i} href={article.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                      <div style={{
+                        padding: "12px 14px",
+                        marginBottom: "8px",
+                        borderRadius: "8px",
+                        background: "#0d1117",
+                        borderLeft: `3px solid ${ac}`,
+                        transition: "background 0.15s",
+                        cursor: "pointer",
+                      }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#161b22"}
+                        onMouseLeave={e => e.currentTarget.style.background = "#0d1117"}
+                      >
+                        <p style={{ margin: "0 0 4px", color: "#e2e8f0", fontSize: "0.82rem", lineHeight: "1.4" }}>
+                          {article.title}
+                        </p>
+                        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                          <span style={{ color: "#475569", fontSize: "0.72rem" }}>{article.source}</span>
+                          <span style={{
+                            background: ac + "22", color: ac,
+                            padding: "1px 8px", borderRadius: "10px", fontSize: "0.68rem", fontWeight: "700",
+                          }}>
+                            {article.label}
+                          </span>
+                          <span style={{ color: "#334155", fontSize: "0.68rem" }}>{article.score}</span>
+                        </div>
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          </>
         )}
 
-        {/* Empty state */}
-        {!data && !loading && !error && (
-          <div style={{ textAlign: "center", padding: "80px 0", color: "#334155" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>📈</div>
-            <p style={{ fontSize: 16, fontWeight: 600, color: "#475569" }}>Search any stock to begin</p>
-            <p style={{ fontSize: 13 }}>Supports NYSE, NASDAQ, NSE (add .NS), BSE (add .BO)</p>
+        {!data && !loading && (
+          <div style={{ textAlign: "center", padding: "80px 20px", color: "#334155" }}>
+            <div style={{ fontSize: "3rem", marginBottom: "16px" }}>◈</div>
+            <p style={{ margin: 0, fontSize: "1rem", color: "#475569" }}>Enter a stock symbol above to begin analysis</p>
+            <p style={{ margin: "8px 0 0", fontSize: "0.8rem", color: "#334155" }}>
+              Supports NYSE · NASDAQ · NSE (add .NS) · BSE (add .BO)
+            </p>
           </div>
         )}
       </div>
